@@ -113,21 +113,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          gh run view "${{ github.run_id }}" --log-failed > failed.log || echo "gh run view --log-failed failed" > failed.log
-          echo "failed.log size: $(wc -c < failed.log)"
+          sleep 15
+          rm -f job-*.log failed-jobs.tsv issue-body.md failed.log
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name] | @tsv' > failed-jobs.tsv
+          echo "--- failed jobs ---"
+          cat failed-jobs.tsv
+          while IFS=$'\t' read -r id name; do
+            echo "Downloading log for job $id ($name)"
+            gh api "repos/$GH_REPO/actions/jobs/$id/logs" > "job-$id.log" 2> "job-$id.err" || true
+            if [[ ! -s "job-$id.log" ]]; then
+              { echo "(log download failed)"; cat "job-$id.err"; } > "job-$id.log"
+            fi
+            rm -f "job-$id.err"
+          done < failed-jobs.tsv
           {
             echo "## Build failure report (run r${{ github.run_number }})"
             echo ""
-            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID"
             echo ""
-            echo "### Tail of failed step logs"
-            echo ""
-            echo '```'
-            tail -c 40000 failed.log
-            echo '```'
+            while IFS=$'\t' read -r id name; do
+              echo "### Job: $name (id $id)"
+              echo ""
+              echo '```'
+              tail -c 25000 "job-$id.log"
+              echo '```'
+              echo ""
+            done < failed-jobs.tsv
           } > issue-body.md
+          cat job-*.log > failed.log || true
 
       - name: "Upload full failed log as artifact"
         uses: actions/upload-artifact@v7
@@ -150,7 +167,7 @@ jobs:
             gh issue comment "$NUM" --body-file issue-body.md
           else
             echo "Creating diagnostics issue"
-            gh issue create --title "$TITLE" --body-file issue-body.md --label ""
+            gh issue create --title "$TITLE" --body-file issue-body.md
           fi
 
   release:
