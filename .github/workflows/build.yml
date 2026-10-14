@@ -117,19 +117,21 @@ jobs:
         run: |
           set -euo pipefail
           sleep 15
-          rm -f job-*.log failed-jobs.tsv issue-body.md failed.log
+          rm -f job-*.raw.log failed-jobs.tsv issue-body.md failed.log
           gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
             --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name] | @tsv' > failed-jobs.tsv
           echo "--- failed jobs ---"
           cat failed-jobs.tsv
           while IFS=$'\t' read -r id name; do
             echo "Downloading log for job $id ($name)"
-            gh api "repos/$GH_REPO/actions/jobs/$id/logs" > "job-$id.log" 2> "job-$id.err" || true
-            if [[ ! -s "job-$id.log" ]]; then
-              { echo "(log download failed)"; cat "job-$id.err"; } > "job-$id.log"
-            fi
-            rm -f "job-$id.err"
+            curl -sSL --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GH_REPO/actions/jobs/$id/logs" \
+              -o "job-$id.raw.log" || echo "(curl failed for job $id)" > "job-$id.raw.log"
+            echo "  raw log size: $(wc -c < "job-$id.raw.log") bytes"
           done < failed-jobs.tsv
+          cat job-*.raw.log > failed.log || true
           {
             echo "## Build failure report (run r${{ github.run_number }})"
             echo ""
@@ -139,12 +141,11 @@ jobs:
               echo "### Job: $name (id $id)"
               echo ""
               echo '```'
-              tail -c 25000 "job-$id.log"
+              sed 's/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B][^\x07]*\x07//g' "job-$id.raw.log" | tail -c 25000
               echo '```'
               echo ""
             done < failed-jobs.tsv
           } > issue-body.md
-          cat job-*.log > failed.log || true
 
       - name: "Upload full failed log as artifact"
         uses: actions/upload-artifact@v7
