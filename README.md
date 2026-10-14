@@ -12,6 +12,7 @@
 - 均基于 Debian 12（bookworm）
 - 均默认安装并启用 SSH（`openssh-server`），开机即可连接
 - 标准 512 字节扇区镜像（SD / eMMC 启动），首次开机自动扩容根分区
+- 使用 Radxa APT test 通道软件源构建（rk3576 内核目前仅发布于 test 通道，与 rsdk 官方 CI 构建方式一致）
 - 编译产物（`img.xz` + `sha512sum` + `manifest` 等）自动发布到 [Releases](../../releases)
 
 ## 触发编译
@@ -34,3 +35,7 @@ xzcat radxa-rk3576_bookworm_kde_*.output_512.img.xz | sudo dd of=/dev/sdX bs=4M 
 ```bash
 ssh radxa@<板子IP>
 ```
+
+## 故障诊断
+
+构建失败时，workflow 会自动在 [issues](../../issues) 中记录失败日志（标题 `[diagnostics] build-failure-log`），便于排查。

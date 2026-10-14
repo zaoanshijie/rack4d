@@ -68,7 +68,7 @@ jobs:
           runCmd: |
             set -euo pipefail
             src/bin/rsdk setup
-            src/bin/rsdk shell rsdk build --sector-size 512 --image-name output_512.img radxa-rk3576 bookworm ${{ matrix.edition }}
+            src/bin/rsdk shell rsdk build --test-repo --sector-size 512 --image-name output_512.img radxa-rk3576 bookworm ${{ matrix.edition }}
 
       - name: "Verify SSH is included in the image"
         shell: bash
@@ -212,6 +212,7 @@ jobs:
           - 两个镜像均默认安装并启用 OpenSSH（`openssh-server`），开机即可 SSH 连接
           - 首次开机按提示完成 rsetup 初始配置（RadxaOS 默认账号 `radxa` / `radxa`，以 Radxa 官方文档为准）
           - 标准 512 字节扇区镜像，适用于 SD 卡 / eMMC，首次启动自动扩展根分区
+          - 使用 Radxa APT test 通道软件源构建（rk3576 内核目前仅发布于 test 通道，与 rsdk 官方 CI 一致）
 
           ### 烧录
 
