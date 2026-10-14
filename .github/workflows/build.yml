@@ -1,0 +1,161 @@
+name: Build RadxaOS images for ROCK 4D
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      rsdk_ref:
+        description: "rsdk git ref (branch / tag / commit SHA)"
+        required: false
+        default: "main"
+      release_tag:
+        description: "Release tag (empty = r<run_number>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-rock4d
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "Build ${{ matrix.edition }} image"
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        edition:
+          - kde
+          - cli
+    steps:
+      - name: "Checkout rsdk"
+        uses: actions/checkout@v7
+        with:
+          repository: RadxaOS-SDK/rsdk
+          ref: ${{ inputs.rsdk_ref || 'main' }}
+          submodules: recursive
+
+      - name: "Enable KVM group perms"
+        shell: bash
+        run: |
+          if [[ -c /dev/kvm ]]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          else
+            echo "/dev/kvm not found. It may take extra time to deploy rootfs to image."
+          fi
+
+      - name: "Set up QEMU Emulation"
+        uses: docker/setup-qemu-action@v4
+        with:
+          image: tonistiigi/binfmt:latest
+
+      - name: "Build within devcontainer"
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: |
+            set -euo pipefail
+            src/bin/rsdk setup
+            src/bin/rsdk shell rsdk build --sector-size 512 --image-name output_512.img radxa-rk3576 bookworm ${{ matrix.edition }}
+
+      - name: "Verify SSH is included in the image"
+        shell: bash
+        run: |
+          cd "out/radxa-rk3576_bookworm_${{ matrix.edition }}"
+          grep "openssh-server" manifest
+          echo "OK: openssh-server is installed and enabled by default (SSH access out of the box)."
+
+      - name: "Prepare artifacts"
+        shell: bash
+        run: |
+          cd "out/radxa-rk3576_bookworm_${{ matrix.edition }}"
+          sudo chown -R $USER:$GROUPS .
+          TIMESTAMP="r${{ github.run_number }}"
+          TUPLE="radxa-rk3576_bookworm_${{ matrix.edition }}"
+          rm -f rootfs.tar seed.tar.xz
+          rm -rf debs
+          for i in *; do
+            mv "$i" "${TUPLE}_${TIMESTAMP}.$i"
+          done
+          xz -vT 0 ./*.img
+          find . -type f -exec sha512sum {} \; | tee "${TUPLE}_${TIMESTAMP}.sha512sum"
+          echo "--- artifacts ---"
+          ls -lah
+
+      - name: "Upload artifact"
+        uses: actions/upload-artifact@v7
+        with:
+          name: "radxa-rk3576_bookworm_${{ matrix.edition }}"
+          path: "out/radxa-rk3576_bookworm_${{ matrix.edition }}/*"
+          if-no-files-found: error
+
+  release:
+    name: "Create release and upload images"
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: "Determine release tag"
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          if [[ -z "$TAG" ]]; then TAG="r${{ github.run_number }}"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: "Download artifacts"
+        uses: actions/download-artifact@v7
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: "Create release and upload assets"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "--- downloaded assets ---"
+          ls -lah assets/
+          cat > release-notes.md <<'EOF'
+          ## RadxaOS for Radxa ROCK 4D（Debian 12 bookworm）
+
+          | 镜像 | 说明 |
+          | ---- | ---- |
+          | `*_kde_*.output_512.img.xz` | KDE Plasma 桌面版（与官方发布一致） |
+          | `*_cli_*.output_512.img.xz` | CLI 精简版（无桌面环境） |
+
+          - 两个镜像均默认安装并启用 OpenSSH（`openssh-server`），开机即可 SSH 连接
+          - 首次开机按提示完成 rsetup 初始配置（RadxaOS 默认账号 `radxa` / `radxa`，以 Radxa 官方文档为准）
+          - 标准 512 字节扇区镜像，适用于 SD 卡 / eMMC，首次启动自动扩展根分区
+
+          ### 烧录
+
+          ```bash
+          xzcat radxa-rk3576_bookworm_kde_*.output_512.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+          ```
+
+          ### 校验
+
+          ```bash
+          sha512sum -c *.sha512sum
+          ```
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, will upload/overwrite assets."
+          else
+            gh release create "$TAG" --title "ROCK 4D RadxaOS bookworm ($TAG)" --notes-file release-notes.md
+          fi
+          gh release upload "$TAG" assets/* --clobber
