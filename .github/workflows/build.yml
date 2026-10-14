@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  actions: read
 
 concurrency:
   group: build-rock4d
@@ -98,6 +100,58 @@ jobs:
           name: "radxa-rk3576_bookworm_${{ matrix.edition }}"
           path: "out/radxa-rk3576_bookworm_${{ matrix.edition }}/*"
           if-no-files-found: error
+
+  report:
+    name: "Report build failure"
+    needs: build
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: "Collect failed step logs"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh run view "${{ github.run_id }}" --log-failed > failed.log || echo "gh run view --log-failed failed" > failed.log
+          echo "failed.log size: $(wc -c < failed.log)"
+          {
+            echo "## Build failure report (run r${{ github.run_number }})"
+            echo ""
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo "### Tail of failed step logs"
+            echo ""
+            echo '```'
+            tail -c 40000 failed.log
+            echo '```'
+          } > issue-body.md
+
+      - name: "Upload full failed log as artifact"
+        uses: actions/upload-artifact@v7
+        with:
+          name: "failed-logs-r${{ github.run_number }}"
+          path: failed.log
+          if-no-files-found: warn
+
+      - name: "Create or update diagnostics issue"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TITLE="[diagnostics] build-failure-log"
+          NUM=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --limit 1 --jq '.[0].number // empty')
+          if [[ -n "$NUM" ]]; then
+            echo "Commenting on existing issue #$NUM"
+            gh issue comment "$NUM" --body-file issue-body.md
+          else
+            echo "Creating diagnostics issue"
+            gh issue create --title "$TITLE" --body-file issue-body.md --label ""
+          fi
 
   release:
     name: "Create release and upload images"
