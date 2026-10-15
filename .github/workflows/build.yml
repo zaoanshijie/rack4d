@@ -212,6 +212,8 @@ jobs:
           #    CLI (e.g. "The option `dotenv.resolved' ... has no value defined");
           #    the era-appropriate CLI is what upstream used when building those
           #    revisions. Main-like targets keep the latest devenv (matches upstream CI).
+          #    NOTE: `nix profile install` (not `add`) - old rsdk devcontainers pin nix 2.21
+          #    which does not know the `add` subcommand.
           if [[ "$TARGET_KIND" == "official" ]]; then
             RSDK_DATE=$(git log -1 --format=%cI)
             NIXPKGS_PIN=$(gh api "repos/NixOS/nixpkgs/commits?sha=nixpkgs-unstable&until=$RSDK_DATE&per_page=1" --jq '.[0].sha')
@@ -227,7 +229,7 @@ jobs:
               raise SystemExit(1)
           pin_block = (
               "nix profile remove devenv >/dev/null 2>&1 || true\n"
-              + "nix profile add \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
+              + "nix profile install \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
           )
           open(p, "w").write(s.replace(anchor, pin_block + anchor, 1))
           print("patched: rsdk-setup installs era-pinned devenv ->", pin)
@@ -390,6 +392,9 @@ jobs:
   release:
     name: "Create releases and upload images"
     needs: [resolve, build]
+    # Run even when some matrix legs failed, so that successful targets are still
+    # released (per-target artifacts are checked below; targets without artifacts are skipped).
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.should_build != '0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -409,8 +414,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "--- downloaded assets ---"
-          ls -lah assets/
+          ls -lah assets/ || true
           shopt -s nullglob
+          FILES_ALL=(assets/*)
+          if [[ ${#FILES_ALL[@]} -eq 0 ]]; then
+            echo "No build artifacts available (builds failed); nothing to release."
+            exit 0
+          fi
           echo "$TARGETS" | jq -c '.[]' | while IFS= read -r t; do
             TAG=$(echo "$t" | jq -r '.tag')
             RSDK_SHA=$(echo "$t" | jq -r '.rsdk_ref')
@@ -461,6 +471,11 @@ jobs:
               -e "s|__OFFICIAL_PUBLISHED__|$OFFICIAL_PUBLISHED|g" \
               -e "s|__EVENT__|$EVENT_NAME|g" \
               release-notes.md
+            FILES=(assets/*_"$TAG".*)
+            if [[ ${#FILES[@]} -eq 0 ]]; then
+              echo "No artifacts for release '$TAG' (its build failed); skipping."
+              continue
+            fi
             TITLE="ROCK 4D RadxaOS bookworm (rsdk $TAG)"
             if gh release view "$TAG" >/dev/null 2>&1; then
               echo "=== Release '$TAG' already exists; updating title/notes and overwriting assets. ==="
@@ -469,7 +484,6 @@ jobs:
               echo "=== Creating release '$TAG' ==="
               gh release create "$TAG" --title "$TITLE" --notes-file release-notes.md
             fi
-            FILES=(assets/*_"$TAG".*)
             echo "--- uploading ${#FILES[@]} files to release $TAG ---"
             gh release upload "$TAG" "${FILES[@]}" --clobber
             echo "--- pruning stale assets on $TAG ---"
