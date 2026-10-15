@@ -140,6 +140,9 @@ jobs:
 
       - name: "Patch rsdk for CI"
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_KIND: ${{ matrix.kind }}
         run: |
           set -euo pipefail
 
@@ -176,7 +179,8 @@ jobs:
           #    runs `disable_service ssh` on first boot and only re-enables it when the
           #    board is headless (and the Rockchip DSI connector always reports
           #    "connected", so headless is never detected on these boards).
-          #    Patch both copies shipped in the image and make sure ssh.service is enabled.
+          #    Patch both copies shipped in the image and make sure ssh.service is enabled
+          #    (systemctl --root creates the proper systemd enable symlinks offline).
           python3 - <<'PYEOF'
           import re
           p = 'src/share/rsdk/build/rootfs.jsonnet'
@@ -195,13 +199,42 @@ jobs:
               + indent + '            sed -i "s/^disable_service ssh$/# disable_service ssh  # rack4d: keep SSH enabled by default/; s/^disable_service ssh\\.socket$/# disable_service ssh.socket  # rack4d: keep SSH enabled by default/" "$f"\n'
               + indent + '        fi\n'
               + indent + '    done\n'
-              + indent + '    chroot "$1" systemctl enable ssh.service\n'
+              + indent + '    systemctl --root="$1" enable ssh.service\n'
               + indent + '|||,\n'
           )
           s = s[:m.start()] + hook + s[m.start():]
           open(p, 'w').write(s)
           print('patched: injected SSH-enable customize-hook into rootfs.jsonnet')
           PYEOF
+
+          # 4) For old (official-sync) rsdk revisions, pin devenv to the nixpkgs revision
+          #    of that era. Old devenv configs are incompatible with the latest devenv
+          #    CLI (e.g. "The option `dotenv.resolved' ... has no value defined");
+          #    the era-appropriate CLI is what upstream used when building those
+          #    revisions. Main-like targets keep the latest devenv (matches upstream CI).
+          if [[ "$TARGET_KIND" == "official" ]]; then
+            RSDK_DATE=$(git log -1 --format=%cI)
+            NIXPKGS_PIN=$(gh api "repos/NixOS/nixpkgs/commits?sha=nixpkgs-unstable&until=$RSDK_DATE&per_page=1" --jq '.[0].sha')
+            echo "Official target: pinning devenv to nixpkgs@${NIXPKGS_PIN} (era of rsdk commit $RSDK_DATE)"
+            python3 -c '
+import sys
+pin = sys.argv[1]
+p = "src/libexec/rsdk/rsdk-setup"
+s = open(p).read()
+anchor = "if ! command -v direnv || ! command -v devenv; then"
+if anchor not in s:
+    print("FATAL: rsdk-setup anchor not found")
+    raise SystemExit(1)
+pin_block = (
+    "nix profile remove devenv >/dev/null 2>&1 || true\n"
+    + "nix profile add \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
+)
+open(p, "w").write(s.replace(anchor, pin_block + anchor, 1))
+print("patched: rsdk-setup installs era-pinned devenv ->", pin)
+' "$NIXPKGS_PIN"
+          else
+            echo "main-like target: keep latest devenv (matches upstream CI)"
+          fi
 
       - name: "Enable KVM group perms"
         shell: bash
@@ -252,7 +285,9 @@ jobs:
             echo "FAIL: first-boot config still disables ssh"
             exit 1
           fi
-          if ! tar -tf rootfs.tar | grep -q 'multi-user\.target\.wants/ssh\.service'; then
+          # NOTE: no `grep -q` here - it exits early on first match, SIGPIPEs tar,
+          # and pipefail would turn a successful match into a false failure.
+          if ! tar -tf rootfs.tar | grep 'multi-user\.target\.wants/ssh\.service' > /dev/null; then
             echo "FAIL: ssh.service is not enabled in the image"
             exit 1
           fi
