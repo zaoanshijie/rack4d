@@ -149,26 +149,34 @@ jobs:
           sed -i 's/read -rp "Press Enter to continue..."/exit 1 # CI: fail fast instead of interactive wait/' src/libexec/rsdk/rsdk-setup
           grep -q "exit 1 # CI: fail fast" src/libexec/rsdk/rsdk-setup
 
-          # 2) Old rsdk revisions ship a devenv.nix with a `git-hooks` block that the
-          #    current devenv rejects ("git-hooks or pre-commit-hooks input required").
-          #    That block only configures dev-shell commit hooks; drop it when present.
+          # 2) Old rsdk revisions do not declare the `git-hooks` devenv input. The current
+          #    devenv CLI evaluates config.git-hooks unconditionally and throws
+          #    "git-hooks or pre-commit-hooks input required" when it is missing.
+          #    Upstream rsdk main declares this input in devenv.yaml; add it the same way.
           python3 - <<'PYEOF'
-          import re
-          p = 'devenv.nix'
+          p = 'devenv.yaml'
           s = open(p).read()
-          new = re.sub(r'\n  git-hooks = \{.*?\n  \};\n', '\n', s, flags=re.S)
-          if new != s:
-              open(p, 'w').write(new)
-              print('patched: removed git-hooks block from devenv.nix')
+          if 'git-hooks' in s:
+              print('devenv.yaml already declares git-hooks input')
           else:
-              print('devenv.nix: no git-hooks block, nothing to do')
+              block = (
+                  '  git-hooks:\n'
+                  '    url: github:cachix/git-hooks.nix\n'
+                  '    inputs:\n'
+                  '      nixpkgs:\n'
+                  '        follows: nixpkgs\n'
+              )
+              s = s.rstrip('\n') + '\n' + block
+              open(p, 'w').write(s)
+              print('patched: declared git-hooks input in devenv.yaml')
           PYEOF
 
           # 3) Keep SSH enabled by default.
           #    RadxaOS first-boot config (/config/before.txt from rsetup-config-first-boot)
           #    runs `disable_service ssh` on first boot and only re-enables it when the
-          #    board is headless. Patch both copies shipped in the image and make sure
-          #    ssh.service is enabled.
+          #    board is headless (and the Rockchip DSI connector always reports
+          #    "connected", so headless is never detected on these boards).
+          #    Patch both copies shipped in the image and make sure ssh.service is enabled.
           python3 - <<'PYEOF'
           import re
           p = 'src/share/rsdk/build/rootfs.jsonnet'
@@ -218,7 +226,19 @@ jobs:
           runCmd: |
             set -euo pipefail
             src/bin/rsdk setup
-            src/bin/rsdk shell rsdk build --test-repo --sector-size 512 --image-name output_512.img radxa-rk3576 bookworm ${{ matrix.edition }}
+            attempt=1
+            while true; do
+              if src/bin/rsdk shell rsdk build --test-repo --sector-size 512 --image-name output_512.img radxa-rk3576 bookworm ${{ matrix.edition }}; then
+                break
+              fi
+              if [ "$attempt" -ge 2 ]; then
+                echo "=== rsdk build still failing after $attempt attempts, giving up ==="
+                exit 1
+              fi
+              echo "=== rsdk build attempt $attempt failed (transient upstream apt errors are common); retrying in 120s ==="
+              attempt=$((attempt + 1))
+              sleep 120
+            done
 
       - name: "Verify SSH is enabled in the image"
         shell: bash
@@ -375,7 +395,7 @@ jobs:
           | `*_kde_*.output_512.img.xz` | KDE Plasma 桌面版（与官方发布一致） |
           | `*_cli_*.output_512.img.xz` | CLI 精简版（无桌面环境） |
 
-          - 两个镜像均默认安装并启用 OpenSSH（`openssh-server`）：已修补官方首次开机配置（官方镜像首次开机默认禁用 SSH，仅无显示器时才启用），无论是否连接显示器 SSH 都保持开启，开机即可连接
+          - 两个镜像均默认安装并启用 OpenSSH（`openssh-server`）：已修补官方首次开机配置（官方镜像首次开机默认禁用 SSH，仅无显示器时才启用；且 Rockchip 板子的 DSI 连接器始终上报已连接，headless 检测实际从不生效），无论是否连接显示器 SSH 都保持开启，开机即可连接
           - 首次开机按提示完成 rsetup 初始配置（RadxaOS 默认账号 `radxa` / `radxa`，以 Radxa 官方文档为准）
           - 标准 512 字节扇区镜像，适用于 SD 卡 / eMMC，首次启动自动扩展根分区
           - 使用 Radxa APT test 通道软件源构建（rk3576 内核目前仅发布于 test 通道，与 rsdk 官方 CI 一致）
