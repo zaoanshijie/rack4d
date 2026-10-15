@@ -138,6 +138,63 @@ jobs:
           ref: ${{ matrix.rsdk_ref }}
           submodules: recursive
 
+      - name: "Patch rsdk for CI"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1) Never wait for interactive input in CI.
+          #    Old rsdk revisions block forever on `read -rp "Press Enter..."` when
+          #    a soft-failure path triggers inside the devcontainer (no TTY).
+          sed -i 's/read -rp "Press Enter to continue..."/exit 1 # CI: fail fast instead of interactive wait/' src/libexec/rsdk/rsdk-setup
+          grep -q "exit 1 # CI: fail fast" src/libexec/rsdk/rsdk-setup
+
+          # 2) Old rsdk revisions ship a devenv.nix with a `git-hooks` block that the
+          #    current devenv rejects ("git-hooks or pre-commit-hooks input required").
+          #    That block only configures dev-shell commit hooks; drop it when present.
+          python3 - <<'PYEOF'
+          import re
+          p = 'devenv.nix'
+          s = open(p).read()
+          new = re.sub(r'\n  git-hooks = \{.*?\n  \};\n', '\n', s, flags=re.S)
+          if new != s:
+              open(p, 'w').write(new)
+              print('patched: removed git-hooks block from devenv.nix')
+          else:
+              print('devenv.nix: no git-hooks block, nothing to do')
+          PYEOF
+
+          # 3) Keep SSH enabled by default.
+          #    RadxaOS first-boot config (/config/before.txt from rsetup-config-first-boot)
+          #    runs `disable_service ssh` on first boot and only re-enables it when the
+          #    board is headless. Patch both copies shipped in the image and make sure
+          #    ssh.service is enabled.
+          python3 - <<'PYEOF'
+          import re
+          p = 'src/share/rsdk/build/rootfs.jsonnet'
+          s = open(p).read()
+          m = re.search(r'^([ \t]*)// Adding additional customization commands', s, flags=re.M)
+          if not m:
+              print('FATAL: rootfs.jsonnet patch anchor not found')
+              raise SystemExit(1)
+          indent = m.group(1)
+          hook = (
+              indent + '|||\n'
+              + indent + '    set -e\n'
+              + indent + '    echo "[rack4d] Keep SSH enabled: patching first-boot config"\n'
+              + indent + '    for f in "$1/config/before.txt" "$1/usr/share/doc/rsetup-config-first-boot/before.txt"; do\n'
+              + indent + '        if [ -f "$f" ]; then\n'
+              + indent + '            sed -i "s/^disable_service ssh$/# disable_service ssh  # rack4d: keep SSH enabled by default/; s/^disable_service ssh\\.socket$/# disable_service ssh.socket  # rack4d: keep SSH enabled by default/" "$f"\n'
+              + indent + '        fi\n'
+              + indent + '    done\n'
+              + indent + '    chroot "$1" systemctl enable ssh.service\n'
+              + indent + '|||,\n'
+          )
+          s = s[:m.start()] + hook + s[m.start():]
+          open(p, 'w').write(s)
+          print('patched: injected SSH-enable customize-hook into rootfs.jsonnet')
+          PYEOF
+
       - name: "Enable KVM group perms"
         shell: bash
         run: |
@@ -163,12 +220,23 @@ jobs:
             src/bin/rsdk setup
             src/bin/rsdk shell rsdk build --test-repo --sector-size 512 --image-name output_512.img radxa-rk3576 bookworm ${{ matrix.edition }}
 
-      - name: "Verify SSH is included in the image"
+      - name: "Verify SSH is enabled in the image"
         shell: bash
         run: |
+          set -euo pipefail
           cd "out/radxa-rk3576_bookworm_${{ matrix.edition }}"
           grep "openssh-server" manifest
-          echo "OK: openssh-server is installed and enabled by default (SSH access out of the box)."
+          tar -xOf rootfs.tar ./config/before.txt > /tmp/before.txt 2>/dev/null \
+            || tar -xOf rootfs.tar config/before.txt > /tmp/before.txt
+          if grep -q '^disable_service ssh' /tmp/before.txt; then
+            echo "FAIL: first-boot config still disables ssh"
+            exit 1
+          fi
+          if ! tar -tf rootfs.tar | grep -q 'multi-user\.target\.wants/ssh\.service'; then
+            echo "FAIL: ssh.service is not enabled in the image"
+            exit 1
+          fi
+          echo "OK: openssh-server installed and enabled; first-boot config keeps SSH on (headless or not)."
 
       - name: "Prepare artifacts"
         shell: bash
@@ -307,7 +375,7 @@ jobs:
           | `*_kde_*.output_512.img.xz` | KDE Plasma 桌面版（与官方发布一致） |
           | `*_cli_*.output_512.img.xz` | CLI 精简版（无桌面环境） |
 
-          - 两个镜像均默认安装并启用 OpenSSH（`openssh-server`），开机即可 SSH 连接
+          - 两个镜像均默认安装并启用 OpenSSH（`openssh-server`）：已修补官方首次开机配置（官方镜像首次开机默认禁用 SSH，仅无显示器时才启用），无论是否连接显示器 SSH 都保持开启，开机即可连接
           - 首次开机按提示完成 rsetup 初始配置（RadxaOS 默认账号 `radxa` / `radxa`，以 Radxa 官方文档为准）
           - 标准 512 字节扇区镜像，适用于 SD 卡 / eMMC，首次启动自动扩展根分区
           - 使用 Radxa APT test 通道软件源构建（rk3576 内核目前仅发布于 test 通道，与 rsdk 官方 CI 一致）
