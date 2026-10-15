@@ -216,22 +216,22 @@ jobs:
             RSDK_DATE=$(git log -1 --format=%cI)
             NIXPKGS_PIN=$(gh api "repos/NixOS/nixpkgs/commits?sha=nixpkgs-unstable&until=$RSDK_DATE&per_page=1" --jq '.[0].sha')
             echo "Official target: pinning devenv to nixpkgs@${NIXPKGS_PIN} (era of rsdk commit $RSDK_DATE)"
-            python3 -c '
-import sys
-pin = sys.argv[1]
-p = "src/libexec/rsdk/rsdk-setup"
-s = open(p).read()
-anchor = "if ! command -v direnv || ! command -v devenv; then"
-if anchor not in s:
-    print("FATAL: rsdk-setup anchor not found")
-    raise SystemExit(1)
-pin_block = (
-    "nix profile remove devenv >/dev/null 2>&1 || true\n"
-    + "nix profile add \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
-)
-open(p, "w").write(s.replace(anchor, pin_block + anchor, 1))
-print("patched: rsdk-setup installs era-pinned devenv ->", pin)
-' "$NIXPKGS_PIN"
+            python3 - "$NIXPKGS_PIN" <<'PYEOF'
+          import sys
+          pin = sys.argv[1]
+          p = "src/libexec/rsdk/rsdk-setup"
+          s = open(p).read()
+          anchor = "if ! command -v direnv || ! command -v devenv; then"
+          if anchor not in s:
+              print("FATAL: rsdk-setup anchor not found")
+              raise SystemExit(1)
+          pin_block = (
+              "nix profile remove devenv >/dev/null 2>&1 || true\n"
+              + "nix profile add \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
+          )
+          open(p, "w").write(s.replace(anchor, pin_block + anchor, 1))
+          print("patched: rsdk-setup installs era-pinned devenv ->", pin)
+          PYEOF
           else
             echo "main-like target: keep latest devenv (matches upstream CI)"
           fi
