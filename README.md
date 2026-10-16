@@ -1,4 +1,4 @@
-# rack4d
+# rock4d
 
 使用 GitHub Actions 基于 [rsdk](https://github.com/RadxaOS-SDK/rsdk)（RadxaOS 官方 SDK）编译 [Radxa ROCK 4D](https://docs.radxa.com/rock4/rock4d) 的 RadxaOS 镜像。
 

@@ -193,10 +193,10 @@ jobs:
           hook = (
               indent + '|||\n'
               + indent + '    set -e\n'
-              + indent + '    echo "[rack4d] Keep SSH enabled: patching first-boot config"\n'
+              + indent + '    echo "[rock4d] Keep SSH enabled: patching first-boot config"\n'
               + indent + '    for f in "$1/config/before.txt" "$1/usr/share/doc/rsetup-config-first-boot/before.txt"; do\n'
               + indent + '        if [ -f "$f" ]; then\n'
-              + indent + '            sed -i "s/^disable_service ssh$/# disable_service ssh  # rack4d: keep SSH enabled by default/; s/^disable_service ssh\\.socket$/# disable_service ssh.socket  # rack4d: keep SSH enabled by default/" "$f"\n'
+              + indent + '            sed -i "s/^disable_service ssh$/# disable_service ssh  # rock4d: keep SSH enabled by default/; s/^disable_service ssh\\.socket$/# disable_service ssh.socket  # rock4d: keep SSH enabled by default/" "$f"\n'
               + indent + '        fi\n'
               + indent + '    done\n'
               + indent + '    systemctl --root="$1" enable ssh.service\n'
@@ -229,7 +229,7 @@ jobs:
               raise SystemExit(1)
           pin_block = (
               "nix profile remove devenv >/dev/null 2>&1 || true\n"
-              + "nix profile install \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
+              + "nix profile install \"github:NixOS/nixpkgs/%s#devenv\"  # rock4d: era-pinned devenv\n" % pin
           )
           open(p, "w").write(s.replace(anchor, pin_block + anchor, 1))
           print("patched: rsdk-setup installs era-pinned devenv ->", pin)
