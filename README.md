@@ -53,6 +53,7 @@ Release 以**编译所用 rsdk 提交的前 12 位 hash** 命名（如 `4e2ece0e
 - `devenv.yaml` 未声明 `git-hooks` input（当前 devenv CLI 无条件评估该配置并抛 `git-hooks or pre-commit-hooks input required`；上游 rsdk main 后来自行添加了该声明）→ 按同样方式补充声明
 - 旧版 devcontainer 固定的 nix 2.21 / 旧 base 镜像与**最新** devenv CLI 不兼容（如 `The option 'dotenv.resolved' ... has no value defined`）→ 按官方构建当时的日期查得 nixpkgs-unstable 修订，用 `nix profile install github:NixOS/nixpkgs/<当时修订>#devenv` 安装同时代 devenv（era-pin，复现官方当时的工具链）
 - 注意 `nix profile install` 而非 `nix profile add`：旧版 nix 2.21 无 `add` 子命令
+- rsdk main 切换 image-ng 镜像生成器后，`rsdk-build` 仍按旧接口传递 `efi`/`sdboot` jsonnet 参数（上游短暂不同步，报 `function has no parameter efi/sdboot`）→ 检测到 `image-ng.jsonnet` 未声明这些参数时自动移除传参（上游对齐后自动失效）
 
 ## 触发编译
 

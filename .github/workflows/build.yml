@@ -193,10 +193,10 @@ jobs:
           hook = (
               indent + '|||\n'
               + indent + '    set -e\n'
-              + indent + '    echo "[rock4d] Keep SSH enabled: patching first-boot config"\n'
+              + indent + '    echo "[rack4d] Keep SSH enabled: patching first-boot config"\n'
               + indent + '    for f in "$1/config/before.txt" "$1/usr/share/doc/rsetup-config-first-boot/before.txt"; do\n'
               + indent + '        if [ -f "$f" ]; then\n'
-              + indent + '            sed -i "s/^disable_service ssh$/# disable_service ssh  # rock4d: keep SSH enabled by default/; s/^disable_service ssh\\.socket$/# disable_service ssh.socket  # rock4d: keep SSH enabled by default/" "$f"\n'
+              + indent + '            sed -i "s/^disable_service ssh$/# disable_service ssh  # rack4d: keep SSH enabled by default/; s/^disable_service ssh\\.socket$/# disable_service ssh.socket  # rack4d: keep SSH enabled by default/" "$f"\n'
               + indent + '        fi\n'
               + indent + '    done\n'
               + indent + '    systemctl --root="$1" enable ssh.service\n'
@@ -229,13 +229,30 @@ jobs:
               raise SystemExit(1)
           pin_block = (
               "nix profile remove devenv >/dev/null 2>&1 || true\n"
-              + "nix profile install \"github:NixOS/nixpkgs/%s#devenv\"  # rock4d: era-pinned devenv\n" % pin
+              + "nix profile install \"github:NixOS/nixpkgs/%s#devenv\"  # rack4d: era-pinned devenv\n" % pin
           )
           open(p, "w").write(s.replace(anchor, pin_block + anchor, 1))
           print("patched: rsdk-setup installs era-pinned devenv ->", pin)
           PYEOF
           else
             echo "main-like target: keep latest devenv (matches upstream CI)"
+          fi
+
+          # 5) Adapt to the image-ng image generator (rsdk main after "feat: default to
+          #    image-ng"). rsdk-build still passes the legacy `efi`/`sdboot` jsonnet
+          #    args, which image-ng.jsonnet no longer accepts ("function has no
+          #    parameter efi/sdboot"). Drop them only when image-ng.jsonnet does not
+          #    declare those parameters, so the patch auto-disables once upstream
+          #    reconciles both sides.
+          if [[ -f src/share/rsdk/build/image-ng.jsonnet ]]; then
+            if ! grep -Eq '^[[:space:]]*efi[[:space:]]*=' src/share/rsdk/build/image-ng.jsonnet; then
+              sed -i '\#JSONNET_ARGS+=("--tla-code" "efi=\$RSDK_OPTION_EFI")#d' src/libexec/rsdk/rsdk-build
+              echo "patched: dropped legacy efi jsonnet arg (image-ng)"
+            fi
+            if ! grep -Eq '^[[:space:]]*sdboot[[:space:]]*=' src/share/rsdk/build/image-ng.jsonnet; then
+              sed -i '\#JSONNET_ARGS+=("--tla-code" "sdboot=\$RSDK_OPTION_SYSTEMD_BOOT")#d' src/libexec/rsdk/rsdk-build
+              echo "patched: dropped legacy sdboot jsonnet arg (image-ng)"
+            fi
           fi
 
       - name: "Enable KVM group perms"
