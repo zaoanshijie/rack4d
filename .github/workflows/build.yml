@@ -241,19 +241,25 @@ jobs:
           # 5) Adapt to the image-ng image generator (rsdk main after "feat: default to
           #    image-ng"). rsdk-build still passes the legacy `efi`/`sdboot` jsonnet
           #    args, which image-ng.jsonnet no longer accepts ("function has no
-          #    parameter efi/sdboot"). Drop them only when image-ng.jsonnet does not
-          #    declare those parameters, so the patch auto-disables once upstream
-          #    reconciles both sides.
+          #    parameter efi/sdboot"). Neutralize them only when image-ng.jsonnet does
+          #    not declare those parameters, so the patch auto-disables once upstream
+          #    reconciles both sides. NOTE: replace with a no-op instead of deleting
+          #    the line - deleting would leave an empty `then` clause and break bash
+          #    parsing entirely.
           if [[ -f src/share/rsdk/build/image-ng.jsonnet ]]; then
             if ! grep -Eq '^[[:space:]]*efi[[:space:]]*=' src/share/rsdk/build/image-ng.jsonnet; then
-              sed -i '\#JSONNET_ARGS+=("--tla-code" "efi=\$RSDK_OPTION_EFI")#d' src/libexec/rsdk/rsdk-build
-              echo "patched: dropped legacy efi jsonnet arg (image-ng)"
+              sed -i 's|^.*JSONNET_ARGS+=("--tla-code" "efi=\$RSDK_OPTION_EFI").*$|\t\t: # rack4d: legacy efi arg dropped (image-ng)|' src/libexec/rsdk/rsdk-build
+              echo "patched: neutralized legacy efi jsonnet arg (image-ng)"
             fi
             if ! grep -Eq '^[[:space:]]*sdboot[[:space:]]*=' src/share/rsdk/build/image-ng.jsonnet; then
-              sed -i '\#JSONNET_ARGS+=("--tla-code" "sdboot=\$RSDK_OPTION_SYSTEMD_BOOT")#d' src/libexec/rsdk/rsdk-build
-              echo "patched: dropped legacy sdboot jsonnet arg (image-ng)"
+              sed -i 's|^.*JSONNET_ARGS+=("--tla-code" "sdboot=\$RSDK_OPTION_SYSTEMD_BOOT").*$|\t\t: # rack4d: legacy sdboot arg dropped (image-ng)|' src/libexec/rsdk/rsdk-build
+              echo "patched: neutralized legacy sdboot jsonnet arg (image-ng)"
             fi
           fi
+
+          # Sanity: patched scripts must still parse.
+          bash -n src/libexec/rsdk/rsdk-build
+          bash -n src/libexec/rsdk/rsdk-setup
 
       - name: "Enable KVM group perms"
         shell: bash
